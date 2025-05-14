@@ -1,109 +1,152 @@
 import sys
+import asyncio
 import random
-from datetime import datetime
-import csv
-from PySide6 import QtWidgets
+from PySide6.QtCore import QThread, Signal, Slot, QObject
 from PySide6.QtWidgets import QApplication, QMainWindow
 from googletrans import Translator
-
-from ui_game import Ui_MainWindow
-from ui_new_add import Ui_Dialog
 from database import Database
+from ui_game import Ui_MainWindow
+
+# Асинхронный переводчик с кэшированием
+class AsyncTranslator(QObject):
+    finished = Signal(str)
+    error = Signal(str)
+
+    def __init__(self):
+        super().__init__()
+        self.translator = Translator()
+        self.cache = {}
+
+    async def translate(self, text, src='ru', dest='en'):
+        try:
+            if text in self.cache:
+                return self.cache[text]
+            
+            translated = await self.translator.translate(text, src=src, dest=dest)
+            result = translated.text
+            self.cache[text] = result
+            return result
+        except Exception as e:
+            raise e
+
+# Рабочий поток для выполнения асинхронных задач
+class WorkerThread(QThread):
+    finished = Signal(object)
+    error = Signal(str)
+
+    def __init__(self, coroutine):
+        super().__init__()
+        self.coroutine = coroutine
+
+    def run(self):
+        try:
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+            result = loop.run_until_complete(self.coroutine)
+            self.finished.emit(result)
+        except Exception as e:
+            self.error.emit(str(e))
 
 class TranslatorApp(QMainWindow):
     def __init__(self):
-        # QMainWindow.__init__(self)
-        super(TranslatorApp, self).__init__()
-
+        super().__init__()
         self.ui = Ui_MainWindow()
         self.ui.setupUi(self)
 
-        self.input_text = self.ui.input_text
-        self.output_text = self.ui.output_text
-        self.input_text.textChanged.connect(self.translate_text)
-
-        self.en_text = self.ui.en_le_text
-        self.en_text.returnPressed.connect(self.check_answer)
-        self.ru_text = self.ui.ru_qeustion
-
-        self.history_field = self.ui.check_qeust_ans_text
-
-        self.session_spin = self.ui.session_spinbox
-        self.start_button = self.ui.start_session
-        self.start_button.clicked.connect(self.start_session)
-        self.add_new_btn = self.ui.save_word_button
-        self.add_new_btn.clicked.connect(self.add_words_in_file_js_db)
-
-        self.translator = Translator()
-
+        # Инициализация компонентов
         self.database = Database('trans_database.db')
-        self.load_table_database()
-
-        self.database.load_from_json('words_js_file.json')
-        self.words = self.database.words_dict
-        
+        self.translator = AsyncTranslator()
         self.session_words = []
         self.current_word = None
-        # self.show()
 
-    def load_table_database(self):
-        """Загрузка и отображение таблицы из сохраненных данных из базы данных."""
-        get_random = self.database.get_table_db()
-        all_table_db = []
-        for item in range(len(get_random)):
-            all_table_db.append(get_random[item])
-        self.history_field.append(str(all_table_db))
+        # Настройка сигналов
+        self.ui.input_text.textChanged.connect(self.schedule_translation)
+        self.ui.en_le_text.returnPressed.connect(self.check_answer)
+        self.ui.start_session.clicked.connect(self.start_session)
+        self.ui.save_word_button.clicked.connect(self.add_words_to_db)
 
-    def add_words_in_file_js_db(self):
-        """"Добавление в фаил jsan, database, вывод сообщения при бодавления."""
-        russian = self.input_text.toPlainText()
-        english = self.output_text.toPlainText()
-        if russian:
-            self.database.add_word_in_db(russian, english)
-            self.history_field.setText(f"Added to the databasie: {russian, english}")
-        self.database.save_to_json('words_js_file.json')
+        # Загрузка данных
+        self.load_initial_data()
+
+    def load_initial_data(self):
+        """Загрузка начальных данных из БД и JSON"""
+        self.database.load_from_json('words_js_file.json')
+        self.words = self.database.words_dict
+        self.update_history()
+
+    def schedule_translation(self):
+        """Запланировать перевод с задержкой"""
+        text = self.ui.input_text.toPlainText().strip()
+        if text:
+            self.run_async_task(self.translator.translate(text), self.handle_translation_result)
 
     def start_session(self):
-        """Старт ссесии. Выбор количества вопросов в рандом"""
-        self.session_words = random.sample(list(self.words.items()), self.session_spin.value())
+        """Начать тренировочную сессию"""
+        count = self.ui.session_spinbox.value()
+        self.session_words = random.sample(list(self.words.items()), count)
         self.next_word()
 
     def next_word(self):
-        """Следующий вопрос из сесии. Выбор корретного ответа. Удаление из переменой с вопросами для ссеси. Вывод сообщении об окончание ссесии """
+        """Показать следующее слово"""
         if not self.session_words:
-            self.history_field.append("End of session. Start a new session.")
-            self.ru_text.clear()
+            self.ui.check_qeust_ans_text.append("Сессия завершена!")
             return
+
         self.current_word = self.session_words.pop()
-        self.ru_text.setText(self.current_word[0])
+        self.ui.ru_qeustion.setText(self.current_word[0])
+        self.ui.en_le_text.clear()
 
     def check_answer(self):
-        """Проверка на ответ пользователя запущеной ссесие. Вывод информации вопрос ответ."""
-        user_answer = self.en_text.text().strip()
-        correct_answer = self.current_word[1]
-
-        if user_answer.lower() == correct_answer.lower():
-            self.history_field.append(f"Q: {self.current_word[0]}\nA: {user_answer} - Correct!\n")
+        """Проверить ответ пользователя"""
+        user_answer = self.ui.en_le_text.text().strip().lower()
+        correct = self.current_word[1].lower()
+        
+        if user_answer == correct:
+            message = f"✓ Правильно: {self.current_word[0]} -> {correct}"
         else:
-            self.history_field.append(
-                f"Q: {self.current_word[0]}\nA: {user_answer} - Incorrect, Correct Answer: {correct_answer}\n")
-
-        self.en_text.clear()
+            message = f"✗ Ошибка: {self.current_word[0]} | Ваш ответ: {user_answer} | Правильно: {correct}"
+        
+        self.ui.check_qeust_ans_text.append(message)
         self.next_word()
 
-    def translate_text(self):
-        """"Преревод текста"""
-        input_text = self.input_text.toPlainText()
-        if input_text.strip():
-            try:
-# Синхронный вызов для версии 3.1.0a0
-                translated_text = self.translator.translate(input_text, src='ru', dest='en').text
-                self.output_text.setPlainText(translated_text)
-            except Exception as e:
-                self.output_text.setPlainText(f"Translation error: {str(e)}")
-        else:
-            self.output_text.clear()
+    def add_words_to_db(self):
+        """Добавить слова в базу данных"""
+        ru = self.ui.input_text.toPlainText().strip()
+        en = self.ui.output_text.toPlainText().strip()
+        
+        if ru and en:
+            self.database.add_word_in_db(en, ru)
+            self.database.save_to_json('words_js_file.json')
+            self.words[ru] = en
+            self.update_history()
+            self.ui.check_qeust_ans_text.append(f"Добавлено: {ru} - {en}")
 
+    def update_history(self):
+        """Обновить историю"""
+        data = self.database.get_table_db()
+        self.ui.check_qeust_ans_text.clear()
+        for item in data:
+            self.ui.check_qeust_ans_text.append(f"{item[1]} - {item[2]}")
+
+    def run_async_task(self, coroutine, callback):
+        """Запуск асинхронной задачи"""
+        def handle_result(result):
+            callback(result)
+            worker.deleteLater()
+
+        def handle_error(error):
+            self.ui.output_text.setText(f"Ошибка: {error}")
+            worker.deleteLater()
+
+        worker = WorkerThread(coroutine)
+        worker.finished.connect(handle_result)
+        worker.error.connect(handle_error)
+        worker.start()
+
+    def handle_translation_result(self, result):
+        """Обработка результата перевода"""
+        self.ui.output_text.setPlainText(result)
+        self.ui.save_word_button.setEnabled(True)
 
 if __name__ == "__main__":
     app = QApplication(sys.argv)
