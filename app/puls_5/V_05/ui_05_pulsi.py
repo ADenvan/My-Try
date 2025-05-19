@@ -41,7 +41,7 @@ class Ui_MainWindow(object):
         self.question_label.setObjectName(u"question_label")
         self.question_label.setMaximumSize(QSize(140, 100))
         font = QFont()
-        font.setPointSize(50)
+        font.setPointSize(30)
         self.question_label.setFont(font)
 
         self.horizontalLayout_2.addWidget(self.question_label)
@@ -65,7 +65,7 @@ class Ui_MainWindow(object):
         self.time_label.setObjectName(u"time_label")
         self.time_label.setMaximumSize(QSize(30, 100))
         font2 = QFont()
-        font2.setPointSize(9)
+        font2.setPointSize(18)
         self.time_label.setFont(font2)
 
         self.horizontalLayout.addWidget(self.time_label)
